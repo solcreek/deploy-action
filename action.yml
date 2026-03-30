@@ -1,0 +1,82 @@
+name: 'Creek Deploy'
+description: 'Deploy to the edge in seconds. No account required for sandbox previews.'
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
+
+inputs:
+  dir:
+    description: 'Directory to deploy (default: auto-detect from dist/, build/, out/, or package.json)'
+    required: false
+  token:
+    description: 'Creek API key. Omit for sandbox mode (60 min preview, no account needed).'
+    required: false
+  demo:
+    description: 'Deploy a sample site to verify connectivity.'
+    required: false
+    default: 'false'
+  protect:
+    description: 'Password-protect this deployment.'
+    required: false
+
+outputs:
+  url:
+    description: 'Deployed URL (production or sandbox)'
+    value: ${{ steps.deploy.outputs.url }}
+  preview-url:
+    description: 'Preview URL (authenticated deploys only)'
+    value: ${{ steps.deploy.outputs.preview-url }}
+  sandbox-id:
+    description: 'Sandbox ID (sandbox mode only)'
+    value: ${{ steps.deploy.outputs.sandbox-id }}
+  deployment-id:
+    description: 'Deployment ID (authenticated deploys only)'
+    value: ${{ steps.deploy.outputs.deployment-id }}
+  duration:
+    description: 'Deploy duration in milliseconds'
+    value: ${{ steps.deploy.outputs.duration }}
+  mode:
+    description: 'Deploy mode: sandbox, production, or demo'
+    value: ${{ steps.deploy.outputs.mode }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Deploy to Creek
+      id: deploy
+      run: |
+        # Build CLI args
+        ARGS=""
+        if [ "${{ inputs.demo }}" = "true" ]; then
+          ARGS="--demo"
+        elif [ -n "${{ inputs.dir }}" ]; then
+          ARGS="${{ inputs.dir }}"
+        fi
+
+        if [ -n "${{ inputs.protect }}" ]; then
+          ARGS="$ARGS --protect ${{ inputs.protect }}"
+        fi
+
+        # Run Creek deploy with JSON output
+        RESULT=$(npx creek deploy $ARGS --json --yes 2>&1)
+        EXIT_CODE=$?
+
+        # Log full output for debugging
+        echo "$RESULT"
+
+        if [ $EXIT_CODE -ne 0 ]; then
+          echo "::error::Creek deploy failed"
+          echo "$RESULT" | jq -r '.message // "Unknown error"' 2>/dev/null
+          exit 1
+        fi
+
+        # Parse JSON outputs
+        echo "url=$(echo "$RESULT" | jq -r '.url // empty')" >> $GITHUB_OUTPUT
+        echo "preview-url=$(echo "$RESULT" | jq -r '.previewUrl // empty')" >> $GITHUB_OUTPUT
+        echo "sandbox-id=$(echo "$RESULT" | jq -r '.sandboxId // empty')" >> $GITHUB_OUTPUT
+        echo "deployment-id=$(echo "$RESULT" | jq -r '.deploymentId // empty')" >> $GITHUB_OUTPUT
+        echo "duration=$(echo "$RESULT" | jq -r '.deployDurationMs // empty')" >> $GITHUB_OUTPUT
+        echo "mode=$(echo "$RESULT" | jq -r '.mode // empty')" >> $GITHUB_OUTPUT
+      shell: bash
+      env:
+        CREEK_TOKEN: ${{ inputs.token }}
