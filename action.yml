@@ -89,6 +89,11 @@ runs:
         rm -f "$STDERR_FILE"
         echo "$RESULT"
 
+        # The CLI can print notices (e.g. the first-run ToS notice) to stdout
+        # before its JSON. Pretty-printed JSON starts at the last line that is
+        # exactly "{"; without such a line, keep the whole output.
+        RESULT=$(printf '%s\n' "$RESULT" | awk '{ all = all $0 "\n" } /^\{$/ { buf = ""; found = 1 } found { buf = buf $0 "\n" } END { printf "%s", found ? buf : all }')
+
         if [ $EXIT_CODE -ne 0 ]; then
           MESSAGE=$(echo "$RESULT" | jq -r '.message // empty' 2>/dev/null) || MESSAGE=""
           # Escape for workflow-command data (%, CR, LF)
@@ -96,6 +101,11 @@ runs:
           MESSAGE=${MESSAGE//$'\r'/'%0D'}
           MESSAGE=${MESSAGE//$'\n'/'%0A'}
           echo "::error::Creek deploy failed${MESSAGE:+: $MESSAGE}"
+          exit 1
+        fi
+
+        if ! echo "$RESULT" | jq -e . >/dev/null 2>&1; then
+          echo "::error::Creek deploy succeeded but its output could not be parsed as JSON"
           exit 1
         fi
 
