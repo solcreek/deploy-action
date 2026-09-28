@@ -5,18 +5,26 @@ branding:
   color: 'blue'
 
 inputs:
+  working-directory:
+    description: 'Project directory to run `creek deploy` in (e.g. a monorepo package). Default: repository root.'
+    required: false
+    default: '.'
   dir:
-    description: 'Directory to deploy (default: auto-detect from dist/, build/, out/, or package.json)'
+    description: 'Static directory to upload as a 60-minute sandbox. Always a sandbox: ignores token, creek.toml and workers. Omit for production.'
     required: false
   token:
     description: 'Creek API key. Omit for sandbox mode (60 min preview, no account needed).'
     required: false
+  prod:
+    description: 'Deploy to production (requires token, incompatible with dir).'
+    required: false
+    default: 'false'
   demo:
-    description: 'Deploy a sample site to verify connectivity.'
+    description: 'Deprecated: no longer supported by the Creek CLI.'
     required: false
     default: 'false'
   protect:
-    description: 'Password-protect this deployment.'
+    description: 'Deprecated: no longer supported by the Creek CLI.'
     required: false
 
 outputs:
@@ -36,7 +44,7 @@ outputs:
     description: 'Deploy duration in milliseconds'
     value: ${{ steps.deploy.outputs.duration }}
   mode:
-    description: 'Deploy mode: sandbox, production, or demo'
+    description: 'Deploy mode: sandbox or production'
     value: ${{ steps.deploy.outputs.mode }}
 
 runs:
@@ -44,39 +52,64 @@ runs:
   steps:
     - name: Deploy to Creek
       id: deploy
+      working-directory: ${{ inputs.working-directory }}
       run: |
+        if [ "$INPUT_DEMO" = "true" ] || [ -n "$INPUT_PROTECT" ]; then
+          echo "::error::The 'demo' and 'protect' inputs are no longer supported by the Creek CLI. Remove them from your workflow."
+          exit 1
+        fi
+
         # Build CLI args
-        ARGS=""
-        if [ "${{ inputs.demo }}" = "true" ]; then
-          ARGS="--demo"
-        elif [ -n "${{ inputs.dir }}" ]; then
-          ARGS="${{ inputs.dir }}"
+        ARGS=()
+        if [ "$INPUT_PROD" = "true" ]; then
+          if [ -z "$CREEK_TOKEN" ]; then
+            echo "::error::prod: true requires a token. Without one the CLI falls back to a sandbox."
+            exit 1
+          fi
+          if [ -n "$INPUT_DIR" ]; then
+            echo "::error::prod: true cannot be combined with dir. dir always uploads a static sandbox; omit it and let creek.toml describe the project."
+            exit 1
+          fi
+          ARGS+=(--prod)
+        elif [ -n "$INPUT_DIR" ]; then
+          ARGS+=("$INPUT_DIR" --sandbox)
+        elif [ -n "$CREEK_TOKEN" ]; then
+          echo "::warning::Deploying to production because a token is set. Set 'prod: true' to make this explicit; a future Creek CLI will require it."
+        else
+          ARGS+=(--sandbox)
         fi
 
-        if [ -n "${{ inputs.protect }}" ]; then
-          ARGS="$ARGS --protect ${{ inputs.protect }}"
-        fi
-
-        # Run Creek deploy with JSON output
-        RESULT=$(npx creek deploy $ARGS --json --yes 2>&1)
-        EXIT_CODE=$?
+        # Capture stdout (JSON) only; stderr carries warnings and progress
+        STDERR_FILE=$(mktemp)
+        EXIT_CODE=0
+        RESULT=$(npx creek deploy "${ARGS[@]}" --json --yes 2>"$STDERR_FILE") || EXIT_CODE=$?
 
         # Log full output for debugging
+        cat "$STDERR_FILE" >&2
+        rm -f "$STDERR_FILE"
         echo "$RESULT"
 
         if [ $EXIT_CODE -ne 0 ]; then
-          echo "::error::Creek deploy failed"
-          echo "$RESULT" | jq -r '.message // "Unknown error"' 2>/dev/null
+          MESSAGE=$(echo "$RESULT" | jq -r '.message // empty' 2>/dev/null) || MESSAGE=""
+          # Escape for workflow-command data (%, CR, LF)
+          MESSAGE=${MESSAGE//'%'/'%25'}
+          MESSAGE=${MESSAGE//$'\r'/'%0D'}
+          MESSAGE=${MESSAGE//$'\n'/'%0A'}
+          echo "::error::Creek deploy failed${MESSAGE:+: $MESSAGE}"
           exit 1
         fi
 
         # Parse JSON outputs
-        echo "url=$(echo "$RESULT" | jq -r '.url // empty')" >> $GITHUB_OUTPUT
-        echo "preview-url=$(echo "$RESULT" | jq -r '.previewUrl // empty')" >> $GITHUB_OUTPUT
-        echo "sandbox-id=$(echo "$RESULT" | jq -r '.sandboxId // empty')" >> $GITHUB_OUTPUT
-        echo "deployment-id=$(echo "$RESULT" | jq -r '.deploymentId // empty')" >> $GITHUB_OUTPUT
-        echo "duration=$(echo "$RESULT" | jq -r '.deployDurationMs // empty')" >> $GITHUB_OUTPUT
-        echo "mode=$(echo "$RESULT" | jq -r '.mode // empty')" >> $GITHUB_OUTPUT
+        echo "url=$(echo "$RESULT" | jq -r '.url // empty')" >> "$GITHUB_OUTPUT"
+        echo "preview-url=$(echo "$RESULT" | jq -r '.previewUrl // empty')" >> "$GITHUB_OUTPUT"
+        echo "sandbox-id=$(echo "$RESULT" | jq -r '.sandboxId // empty')" >> "$GITHUB_OUTPUT"
+        echo "deployment-id=$(echo "$RESULT" | jq -r '.deploymentId // empty')" >> "$GITHUB_OUTPUT"
+        echo "duration=$(echo "$RESULT" | jq -r '.deployDurationMs // empty')" >> "$GITHUB_OUTPUT"
+        echo "mode=$(echo "$RESULT" | jq -r '.mode // empty')" >> "$GITHUB_OUTPUT"
       shell: bash
       env:
         CREEK_TOKEN: ${{ inputs.token }}
+        INPUT_DIR: ${{ inputs.dir }}
+        INPUT_PROD: ${{ inputs.prod }}
+        INPUT_DEMO: ${{ inputs.demo }}
+        INPUT_PROTECT: ${{ inputs.protect }}
