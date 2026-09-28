@@ -72,9 +72,11 @@ runs:
           fi
           ARGS+=(--prod)
         elif [ -n "$INPUT_DIR" ]; then
-          ARGS+=("$INPUT_DIR")
+          ARGS+=("$INPUT_DIR" --sandbox)
         elif [ -n "$CREEK_TOKEN" ]; then
           echo "::warning::Deploying to production because a token is set. Set 'prod: true' to make this explicit; a future Creek CLI will require it."
+        else
+          ARGS+=(--sandbox)
         fi
 
         # Capture stdout (JSON) only; stderr carries warnings and progress
@@ -88,7 +90,11 @@ runs:
         echo "$RESULT"
 
         if [ $EXIT_CODE -ne 0 ]; then
-          MESSAGE=$(echo "$RESULT" | jq -r '.message // empty' 2>/dev/null)
+          MESSAGE=$(echo "$RESULT" | jq -r '.message // empty' 2>/dev/null) || MESSAGE=""
+          # Escape for workflow-command data (%, CR, LF)
+          MESSAGE=${MESSAGE//'%'/'%25'}
+          MESSAGE=${MESSAGE//$'\r'/'%0D'}
+          MESSAGE=${MESSAGE//$'\n'/'%0A'}
           echo "::error::Creek deploy failed${MESSAGE:+: $MESSAGE}"
           exit 1
         fi
