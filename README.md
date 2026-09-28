@@ -22,9 +22,13 @@ Every PR gets a live preview URL. No signup, no API key.
 ```yaml
 - uses: solcreek/deploy-action@v1
   with:
-    dir: ./dist
     token: ${{ secrets.CREEK_TOKEN }}
+    prod: true
 ```
+
+Production deploys run from your project root and read `creek.toml`. Don't set `dir`
+for production: `dir` always uploads a static 60-minute sandbox, ignoring the token,
+`creek.toml` and any worker.
 
 ## Examples
 
@@ -81,8 +85,8 @@ jobs:
       - uses: solcreek/deploy-action@v1
         id: creek
         with:
-          dir: ./dist
           token: ${{ secrets.CREEK_TOKEN }}
+          prod: true
 
       - run: echo "Deployed to ${{ steps.creek.outputs.url }}"
 ```
@@ -98,24 +102,28 @@ jobs:
 
 Creek auto-detects `dist/`, `build/`, `out/`, or reads `creek.toml`.
 
-### Demo Deploy (Connectivity Test)
+### Monorepo / Subdirectory
 
 ```yaml
 - uses: solcreek/deploy-action@v1
   with:
-    demo: true
+    working-directory: ./website
+    token: ${{ secrets.CREEK_TOKEN }}
+    prod: true
 ```
 
-Deploys a sample page to verify Creek is reachable. Useful for CI smoke tests.
+`working-directory` is where `creek deploy` runs, so `creek.toml` in that folder is used.
 
 ## Inputs
 
 | Input | Required | Default | Description |
 |-------|:--------:|---------|-------------|
-| `dir` | No | auto-detect | Directory to deploy |
+| `working-directory` | No | `.` | Project directory to deploy from (e.g. a monorepo package) |
+| `dir` | No | auto-detect | Static directory to upload as a sandbox. Sandbox only; incompatible with `prod` |
 | `token` | No | — | Creek API key ([get one](https://app.creek.dev)). Omit for sandbox mode. |
-| `demo` | No | `false` | Deploy a sample site |
-| `protect` | No | — | Password-protect this deployment |
+| `prod` | No | `false` | Deploy to production. Requires `token` |
+| `demo` | No | — | Deprecated: no longer supported by the Creek CLI; setting it fails the step |
+| `protect` | No | — | Deprecated: no longer supported by the Creek CLI; setting it fails the step |
 
 ## Outputs
 
@@ -126,11 +134,11 @@ Deploys a sample page to verify Creek is reachable. Useful for CI smoke tests.
 | `sandbox-id` | Sandbox ID (sandbox mode only) |
 | `deployment-id` | Deployment ID (authenticated deploys only) |
 | `duration` | Deploy duration in milliseconds |
-| `mode` | `sandbox`, `production`, or `demo` |
+| `mode` | `sandbox` or `production` |
 
 ## Sandbox vs Production
 
-| | Sandbox (no token) | Production (with token) |
+| | Sandbox (no token, or `dir`) | Production (`token` + `prod: true`) |
 |--|:------------------:|:----------------------:|
 | Account required | No | Yes |
 | TTL | 60 minutes | Permanent |
@@ -140,7 +148,7 @@ Deploys a sample page to verify Creek is reachable. Useful for CI smoke tests.
 
 ## How It Works
 
-This action runs `npx creek deploy --json` under the hood. The Creek CLI auto-detects your framework, collects build output, and deploys to [Cloudflare's edge network](https://creek.dev).
+This action runs `npx creek deploy --json` under the hood (`--prod` when `prod: true`). Only stdout is parsed as JSON; CLI warnings on stderr are logged. The Creek CLI auto-detects your framework, collects build output, and deploys to [Cloudflare's edge network](https://creek.dev).
 
 - **Sandbox mode**: Deploys to `*.creeksandbox.com` (no auth, 60 min TTL)
 - **Production mode**: Deploys to `*.bycreek.com` or your custom domain
