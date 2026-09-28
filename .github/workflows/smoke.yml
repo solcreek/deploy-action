@@ -1,0 +1,151 @@
+name: Smoke test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  # The action runs an unpinned `npx creek`; catch CLI drift weekly.
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Sandbox deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create test sites
+        run: |
+          MARKER="creek-smoke-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "MARKER=$MARKER" >> "$GITHUB_ENV"
+          mkdir -p smoke/dir-site smoke/project
+          echo "<!doctype html><title>dir</title><p>$MARKER-dir</p>" > smoke/dir-site/index.html
+          echo "<!doctype html><title>wd</title><p>$MARKER-wd</p>" > smoke/project/index.html
+
+      - name: Deploy with dir
+        id: dir
+        uses: ./
+        with:
+          dir: smoke/dir-site
+
+      - name: Deploy with working-directory
+        id: wd
+        uses: ./
+        with:
+          working-directory: smoke/project
+
+      - name: Check outputs and live pages
+        env:
+          DIR_URL: ${{ steps.dir.outputs.url }}
+          DIR_MODE: ${{ steps.dir.outputs.mode }}
+          DIR_SANDBOX_ID: ${{ steps.dir.outputs.sandbox-id }}
+          WD_URL: ${{ steps.wd.outputs.url }}
+          WD_MODE: ${{ steps.wd.outputs.mode }}
+          WD_SANDBOX_ID: ${{ steps.wd.outputs.sandbox-id }}
+        run: |
+          FAIL=0
+          check() { # name url mode sandbox-id marker
+            echo "$1: url=$2 mode=$3 sandbox-id=$4"
+            [ -n "$2" ] || { echo "::error::$1: empty url output"; FAIL=1; return; }
+            [ "$3" = "sandbox" ] || { echo "::error::$1: mode is '$3', expected 'sandbox'"; FAIL=1; }
+            [ -n "$4" ] || { echo "::error::$1: empty sandbox-id output"; FAIL=1; }
+            for _ in 1 2 3 4 5 6; do
+              if curl -fsSL --max-time 10 "$2" | grep -q "$5"; then
+                echo "$1: page serves $5"
+                return
+              fi
+              sleep 5
+            done
+            echo "::error::$1: $2 did not serve $5"
+            FAIL=1
+          }
+          check dir "$DIR_URL" "$DIR_MODE" "$DIR_SANDBOX_ID" "$MARKER-dir"
+          check working-directory "$WD_URL" "$WD_MODE" "$WD_SANDBOX_ID" "$MARKER-wd"
+          exit $FAIL
+
+  validate:
+    name: Input validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # A stub npx that always "succeeds": if validation lets a bad input
+      # through, the step passes and the check below fails.
+      - name: Stub npx
+        run: |
+          mkdir -p "$RUNNER_TEMP/stub"
+          cat > "$RUNNER_TEMP/stub/npx" <<'EOF'
+          #!/bin/bash
+          echo "stub npx: $*" >&2
+          echo '{"ok":true,"url":"https://stub.invalid","mode":"stub"}'
+          EOF
+          chmod +x "$RUNNER_TEMP/stub/npx"
+          echo "$RUNNER_TEMP/stub" >> "$GITHUB_PATH"
+
+      - name: prod without token
+        id: prod_no_token
+        continue-on-error: true
+        uses: ./
+        with:
+          prod: true
+
+      - name: prod with dir
+        id: prod_dir
+        continue-on-error: true
+        uses: ./
+        with:
+          prod: true
+          dir: .
+          token: not-a-real-token
+
+      - name: demo (deprecated)
+        id: demo
+        continue-on-error: true
+        uses: ./
+        with:
+          demo: true
+
+      - name: protect (deprecated)
+        id: protect
+        continue-on-error: true
+        uses: ./
+        with:
+          protect: secret
+
+      - name: Valid input reaches the CLI
+        id: valid
+        uses: ./
+        with:
+          dir: .
+
+      - name: Check outcomes
+        env:
+          PROD_NO_TOKEN: ${{ steps.prod_no_token.outcome }}
+          PROD_DIR: ${{ steps.prod_dir.outcome }}
+          DEMO: ${{ steps.demo.outcome }}
+          PROTECT: ${{ steps.protect.outcome }}
+          VALID_URL: ${{ steps.valid.outputs.url }}
+        run: |
+          FAIL=0
+          for c in PROD_NO_TOKEN PROD_DIR DEMO PROTECT; do
+            if [ "${!c}" = "failure" ]; then
+              echo "$c: rejected as expected"
+            else
+              echo "::error::$c: expected failure, got '${!c}'"
+              FAIL=1
+            fi
+          done
+          if [ "$VALID_URL" = "https://stub.invalid" ]; then
+            echo "valid input: outputs parsed from stub"
+          else
+            echo "::error::valid input: url output is '$VALID_URL'"
+            FAIL=1
+          fi
+          exit $FAIL
